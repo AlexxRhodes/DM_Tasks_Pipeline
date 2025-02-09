@@ -153,7 +153,6 @@ void generate_image_from_bodies(struct Body bodies[], int n, struct Image * img)
       }
     }
   }
-
   if (clock_gettime(CLOCK_BOOTTIME, &t1) == -1) {
     perror("clock_gettime");
     exit(1);
