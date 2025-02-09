@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "tasks.h": "c",
+        "dm-base": "cpp"
+    }
+}
