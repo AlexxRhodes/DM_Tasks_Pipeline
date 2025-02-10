@@ -4,14 +4,25 @@
 #include <time.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 #include "tasks.h"
 
-#define NUM_THREADS 5 // Nombre de threads pour chaque type de tâche (sans sauvegarde d'image)
+#define NUM_THREADS 10
+
+typedef struct {
+  int step;
+  void (*function)(int);
+} Task;
+
+typedef struct TaskNode {
+  Task task;
+  struct TaskNode *next;
+} TaskNode;
 
 // Déclaration globale et des semaphores
 int nb_steps, width, height, save_img;
-sem_t sem_img_gen, sem_img_blur, sem_img_gray, sem_img_stats, sem_img_save;
 struct Image **tab_img1, **tab_img2;
 struct ImageStats stats;
 const char *stats_filename = "./img-stats.csv";
@@ -28,71 +39,109 @@ struct Body body_base[N_BODIES] = {
     {19.22, 0.0, 0.030, 0.0, 4.36e-5, 1.6938e-4, 5.0e3, 173, 216, 230},
     {30.05, 0.0, 0.024, 0.0, 5.17e-5, 1.6418e-4, 5.0e3, 0, 0, 128},
 };
+TaskNode *tasks = NULL;
+pthread_mutex_t task_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t task_cond = PTHREAD_COND_INITIALIZER;
+int stop_threads = 0;
 
-void *f_simu(void *arg)
+void addTask(void (*f)(int), int step)
 {
-  for (int i = 0; i < nb_steps; i++)
+  TaskNode *newNode = malloc(sizeof(TaskNode));
+  newNode->task.function = f;
+  newNode->task.step = step;
+  newNode->next = NULL;
+
+  pthread_mutex_lock(&task_mutex);
+  if (tasks == NULL)
   {
-    if (i > 0)  tab_bodies[i] = tab_bodies[i-1];
-    simulate_n_bodies(tab_bodies[i], N_BODIES, 1.0);
-    sem_post(&sem_img_gen);
+    tasks = newNode;
   }
-  return NULL;
+  else
+  {
+    TaskNode *current = tasks;
+    while (current->next != NULL) current = current->next;
+    current->next = newNode;
+  }
+  pthread_cond_signal(&task_cond);
+  pthread_mutex_unlock(&task_mutex);
 }
 
-void *f_img_gen(void *arg)
+Task get_task()
 {
-  for (int i = 0; i < nb_steps; i++)
+  
+  pthread_mutex_lock(&task_mutex);
+  while(tasks == NULL && !stop_threads) pthread_cond_wait(&task_cond, &task_mutex);
+  if(stop_threads && tasks == NULL)
   {
-    sem_wait(&sem_img_gen);
-    generate_image_from_bodies(tab_bodies[i], N_BODIES, tab_img1[i]);    
-    sem_post(&sem_img_blur);
+    pthread_mutex_unlock(&task_mutex);
+    return (Task){NULL, -1};
   }
-  return NULL;
+
+  TaskNode *task_node = tasks;
+  tasks = tasks->next;
+  Task task = task_node->task;
+  free(task_node);
+  pthread_mutex_unlock(&task_mutex);
+  return task;
 }
 
-void *f_img_blur(void *arg)
+void f_simu(int step);
+
+void f_img_save(int step)
 {
-  for (int i = 0; i < nb_steps; i++)
-  {
-    sem_wait(&sem_img_blur);
-    apply_gaussian_blur(tab_img1[i], tab_img2[i]);
-    sem_post(&sem_img_gray);
-    if (save_img) sem_post(&sem_img_save);
-  }
-  return NULL;
+  save_img_as_png(tab_img2[step], png_filename_format, step);
 }
 
-void *f_img_gray(void *arg)
+void f_img_stats(int step)
 {
-  for (int i = 0; i < nb_steps; i++)
+  compute_image_statistics(tab_img1[step], &stats);
+  save_stats(&stats, stats_filename, step);
+  if (step + 1 < nb_steps)  addTask(f_simu, step + 1);
+  else
   {
-    sem_wait(&sem_img_gray);
-    convert_to_grayscale(tab_img2[i], tab_img1[i]);
-    sem_post(&sem_img_stats);
+    pthread_mutex_lock(&task_mutex);
+    stop_threads = 1;
+    pthread_cond_broadcast(&task_cond); // Réveille tous les threads bloqués
+    pthread_mutex_unlock(&task_mutex);
   }
-  return NULL;
 }
 
-void *f_img_stats(void *arg)
-{
-  for (int i = 0; i < nb_steps; i++)
-  {
-    sem_wait(&sem_img_stats);
-    compute_image_statistics(tab_img1[i], &stats);
-    save_stats(&stats, stats_filename, i);
-  }
-  return NULL;
+void f_img_gray(int step)
+{ 
+  convert_to_grayscale(tab_img2[step], tab_img1[step]);
+  addTask(f_img_stats, step);
 }
 
-void *f_img_save(void *arg)
+void f_img_blur(int step)
 {
-  if (!save_img)
-    return NULL;
-  for (int i = 0; i < nb_steps; i++)
+  apply_gaussian_blur(tab_img1[step], tab_img2[step]);
+  addTask(f_img_gray, step);
+  if (save_img) addTask(f_img_save, step);
+}
+
+void f_img_gen(int step)
+{
+  generate_image_from_bodies(tab_bodies[step], N_BODIES, tab_img1[step]);
+  addTask(f_img_blur, step);
+}
+
+void f_simu(int step)
+{
+  //pid_t tid = syscall(SYS_gettid);
+  //printf("%d | f_simu [%d]\n", tid, step);
+  if (step>0) tab_bodies[step] = tab_bodies[step-1];
+  simulate_n_bodies(tab_bodies[step], N_BODIES, 1.0);
+  addTask(f_img_gen, step);
+}
+
+
+void *task(void *arg)
+{
+  while (1)
   {
-    sem_wait(&sem_img_save);
-    save_img_as_png(tab_img2[i], png_filename_format, i);
+    Task task = get_task();
+    if (stop_threads) break;
+    task.function(task.step);
   }
   return NULL;
 }
@@ -149,12 +198,6 @@ int main(int argc, char *argv[])
     }
   }
 
-  sem_init(&sem_img_gen, 0, 0);
-  sem_init(&sem_img_blur, 0, 0);
-  sem_init(&sem_img_gray, 0, 0);
-  sem_init(&sem_img_stats, 0, 0);
-  if (save_img) sem_init(&sem_img_save, 0, 0);
-
 
   struct timespec t0, t1;
   if (clock_gettime(CLOCK_BOOTTIME, &t0) == -1)
@@ -163,10 +206,13 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
+  addTask(f_simu, 0);
   pthread_t threads[NUM_THREADS];
   for(int i = 0; i < NUM_THREADS; ++i){
     pthread_create(&threads[i], NULL, task, NULL);
+    //printf("Thread %d created\n", i);
   }
+
 
   for(int i = 0; i < NUM_THREADS; ++i){
     pthread_join(threads[i], NULL);
@@ -180,13 +226,6 @@ int main(int argc, char *argv[])
 
   int64_t total_ns = ns_diff(&t0, &t1);
   print_elapsed_time_stats(total_ns);
-
-  sem_destroy(&sem_img_gen);
-  sem_destroy(&sem_img_blur);
-  sem_destroy(&sem_img_gray);
-  sem_destroy(&sem_img_stats);
-  if (save_img)
-    sem_destroy(&sem_img_save);
 
   free(tab_bodies);
   for (int i = 0; i < nb_steps; i++)
