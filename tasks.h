@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define N_BODIES 9
-#define G 3e4
+#define G 3e-4
 
 // Types
 struct Body {
