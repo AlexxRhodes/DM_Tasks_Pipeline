@@ -9,7 +9,7 @@
 
 #include "tasks.h"
 
-#define NUM_THREADS 10
+#define NUM_THREADS 4
 
 typedef struct {
   int step;
@@ -85,8 +85,6 @@ Task get_task()
   return task;
 }
 
-void f_simu(int step);
-
 void f_img_save(int step)
 {
   save_img_as_png(tab_img2[step], png_filename_format, step);
@@ -96,8 +94,7 @@ void f_img_stats(int step)
 {
   compute_image_statistics(tab_img1[step], &stats);
   save_stats(&stats, stats_filename, step);
-  if (step + 1 < nb_steps)  addTask(f_simu, step + 1);
-  else
+  if(step + 1 < nb_steps)
   {
     pthread_mutex_lock(&task_mutex);
     stop_threads = 1;
@@ -127,11 +124,12 @@ void f_img_gen(int step)
 
 void f_simu(int step)
 {
-  //pid_t tid = syscall(SYS_gettid);
-  //printf("%d | f_simu [%d]\n", tid, step);
+  pid_t tid = syscall(SYS_gettid);
+  printf("%d | f_simu [%d]\n", tid, step);
   if (step>0) tab_bodies[step] = tab_bodies[step-1];
   simulate_n_bodies(tab_bodies[step], N_BODIES, 1.0);
   addTask(f_img_gen, step);
+  if (step + 1 < nb_steps) addTask(f_simu, step + 1);
 }
 
 
@@ -208,14 +206,17 @@ int main(int argc, char *argv[])
 
   addTask(f_simu, 0);
   pthread_t threads[NUM_THREADS];
+  pid_t tid = syscall(SYS_gettid);
   for(int i = 0; i < NUM_THREADS; ++i){
     pthread_create(&threads[i], NULL, task, NULL);
-    //printf("Thread %d created\n", i);
+    printf("%d | Thread créé\n", tid);
   }
 
 
   for(int i = 0; i < NUM_THREADS; ++i){
     pthread_join(threads[i], NULL);
+    pid_t tid = syscall(SYS_gettid);
+    printf("%d | Thread créé\n", tid);
   }
 
   if (clock_gettime(CLOCK_BOOTTIME, &t1) == -1)
