@@ -1,5 +1,5 @@
 /*
-gcc -o dm-v2 dm-v2.c tasks.c -Wall -Wextra $(pkg-config --libs libpng) -lm -pthread
+gcc -o dm-v3 dm-v3.c tasks-v3.c -Wall -Wextra $(pkg-config --libs libpng) -lm -pthread
 */
 
 #include <math.h>
@@ -14,6 +14,7 @@ gcc -o dm-v2 dm-v2.c tasks.c -Wall -Wextra $(pkg-config --libs libpng) -lm -pthr
 #include "tasks.h"
 
 #define NUM_THREADS 4
+#define DIVIDE_BLUR 4
 
 typedef struct {
   int step;
@@ -113,40 +114,55 @@ void f_img_gray(int step)
   addTask(f_img_stats, step);
 }
 
+void f_img_blur_partial(int step, int index)
+{
+  int start = index*(height / DIVIDE_BLUR);
+  int end = index*(height / DIVIDE_BLUR);
+
+  apply_gaussian_blur(tab_img1[step], tab_img2[step], start, end);
+}
+
 void f_img_blur(int step)
 {
-  apply_gaussian_blur(tab_img1[step], tab_img2[step]);
+  for(int i = 0; i < DIVIDE_BLUR; ++i) // On divise le flou gaussien en DIVIDE_BLUR parties
+  {
+    addTask(f_img_blur_partial, step, i);
+  }
+
   addTask(f_img_gray, step);
   if (save_img) addTask(f_img_save, step);
 }
 
+
+
 void f_img_gen(int step)
 {
-  //pid_t tid = syscall(SYS_gettid);
-  //printf("%d | f_img_gen [%d]\n", tid, step);
   generate_image_from_bodies(tab_bodies[step], N_BODIES, tab_img1[step]);
   addTask(f_img_blur, step);
 }
 
 void f_simu(int step)
 {
-  //pid_t tid = syscall(SYS_gettid);
-  //printf("%d | f_simu [%d]\n", tid, step);
   if (step>0) tab_bodies[step] = tab_bodies[step-1];
   simulate_n_bodies(tab_bodies[step], N_BODIES, 1.0);
-  addTask(f_img_gen, step);
+  f_img_gen(step);
   if (step + 1 < nb_steps) addTask(f_simu, step + 1);
 }
 
 
 void *task(void *arg)
 {
+  //pid_t tid = syscall(SYS_gettid);
+  //printf("%d | Thread créé\n", tid);
+
   while (1)
   {
     Task task = get_task();
     if (stop_threads) break;
     task.function(task.step);
   }
+
+  //printf("%d | Thread terminé\n", tid);
 
   return NULL;
 }

@@ -1,3 +1,7 @@
+/*
+gcc -o dm-v1 dm-v1.c tasks.c -Wall -Wextra $(pkg-config --libs libpng) -lm -pthread
+*/
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
